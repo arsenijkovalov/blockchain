@@ -56,11 +56,11 @@ struct Blockchain {
 }
 
 impl Blockchain {
-    fn initialize(blockchain: &mut LinkedList<Block>) {
+    fn initialize(blch: &mut Blockchain) {
         let start = SystemTime::now();
         let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
         let timestamp = (since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000).to_string();
-        blockchain.push_back(Block {
+        blch.blockchain.push_back(Block {
             prev_hash: String::new(),
             transaction: Transaction {
                 from: String::new(),
@@ -96,30 +96,30 @@ impl Blockchain {
         });
     }
 
-    fn fillBlockchain(blockchain: &mut LinkedList<Block>, queue: &mut VecDeque<Transaction>){
+    fn fillBlockchain(blch: &mut Blockchain, queue: &mut VecDeque<Transaction>){
         for _ in 0..queue.len() {
-            blockchain.push_back(Blockchain::newBlock((blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+            blch.blockchain.push_back(Blockchain::newBlock((blch.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
         }   
     }
 
-    fn showBlocksData(blockchain: &mut LinkedList<Block>){
+    fn showBlocksData(blch: &mut Blockchain){
         println!();
-        for block in blockchain.iter() {
+        for block in blch.blockchain.iter() {
             println!("Header: {}, Transaction (Sender: {}, Receiver: {}, Amount: {}, Hash: {})", block.getPrevHash(), block.transaction.getFrom(), block.transaction.getTo(), block.transaction.getAmount(), block.getHash());
         }    
     }
 
-    fn save(blockchain: LinkedList<Block>) -> std::io::Result<()> {
+    fn save(blch: Blockchain) -> std::io::Result<()> {
         File::create("blockchain_backup.txt");
-        fs::write("blockchain_backup.txt", blockchain.try_to_vec().unwrap()).unwrap();
+        fs::write("blockchain_backup.txt", blch.blockchain.try_to_vec().unwrap()).unwrap();
         Ok(())
     }
 
-    fn load(blockchain: &mut LinkedList<Block>) -> std::io::Result<()> {
+    fn load(blch: &mut Blockchain) -> std::io::Result<()> {
         let mut file: File = File::open("blockchain_backup.txt")?;
         let mut undecoded_blockchain = Vec::<u8>::new();
         file.read_to_end(&mut undecoded_blockchain);
-        *blockchain = LinkedList::<Block>::try_from_slice(&undecoded_blockchain).unwrap();
+        *blch = Blockchain::try_from_slice(&undecoded_blockchain).unwrap();
         Ok(())
     }
 }
@@ -136,29 +136,33 @@ mod tests {
     #[test]
     fn callSave() {
         let mut queue: VecDeque<Transaction> = VecDeque::new();
-        let mut blockchain = LinkedList::<Block>::new();
+        let mut blch = Blockchain {
+            blockchain: LinkedList::<Block>::new(),
+        };
 
-        Blockchain::initialize(&mut blockchain);
+        Blockchain::initialize(&mut blch);
     
         Blockchain::newTransaction(String::from("Sender 1"), String::from("Receiver 5"), 100, &mut queue);
         Blockchain::newTransaction(String::from("Sender 2"), String::from("Receiver 2"), 1000, &mut queue);
         Blockchain::newTransaction(String::from("Sender 3"), String::from("Receiver 1"), 10000, &mut queue);
 
-        assert!(Blockchain::save(blockchain.clone()).is_ok());
+        assert!(Blockchain::save(blch.clone()).is_ok());
     }
 
     #[test]
     fn callLoad() {
         let mut queue: VecDeque<Transaction> = VecDeque::new();
-        let mut blockchain = LinkedList::<Block>::new();
+        let mut blch = Blockchain {
+            blockchain: LinkedList::<Block>::new(),
+        };
 
-        assert!(Blockchain::load(&mut blockchain).is_ok());
+        assert!(Blockchain::load(&mut blch).is_ok());
 
-        assert_eq!({blockchain.front().unwrap().getHash().chars().all(char::is_numeric)}, true);
+        assert_eq!({blch.blockchain.front().unwrap().getHash().chars().all(char::is_numeric)}, true);
         
-        let mut prev_hash = blockchain.front().unwrap().getHash();
+        let mut prev_hash = blch.blockchain.front().unwrap().getHash();
         let mut first_iteration = true;
-        for block in blockchain.iter() {
+        for block in blch.blockchain.iter() {
             if(first_iteration) {
                 first_iteration = false;
                 continue;
@@ -171,9 +175,11 @@ mod tests {
 
 fn main() {
     let mut queue: VecDeque<Transaction> = VecDeque::new();
-    let mut blockchain = LinkedList::<Block>::new();
+    let mut blch = Blockchain {
+        blockchain: LinkedList::<Block>::new(),
+    };
     
-    Blockchain::initialize(&mut blockchain);
+    Blockchain::initialize(&mut blch);
     
     Blockchain::newTransaction(String::from("Sender 1"), String::from("Receiver 5"), 100, &mut queue);
     Blockchain::newTransaction(String::from("Sender 2"), String::from("Receiver 2"), 1000, &mut queue);
@@ -181,15 +187,15 @@ fn main() {
     Blockchain::newTransaction(String::from("Sender 4"), String::from("Receiver 3"), 100000, &mut queue);
     Blockchain::newTransaction(String::from("Sender 5"), String::from("Receiver 4"), 1000000, &mut queue);
 
-    Blockchain::fillBlockchain(&mut blockchain, &mut queue);
+    Blockchain::fillBlockchain(&mut blch, &mut queue);
 
-    Blockchain::showBlocksData(&mut blockchain);
+    Blockchain::showBlocksData(&mut blch);
 
-    Blockchain::save(blockchain.clone());
+    Blockchain::save(blch.clone());
 
-    blockchain.clear();
+    blch.blockchain.clear();
 
-    Blockchain::load(&mut blockchain);
+    Blockchain::load(&mut blch);
 
-    Blockchain::showBlocksData(&mut blockchain);
+    Blockchain::showBlocksData(&mut blch);
 }

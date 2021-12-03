@@ -1,0 +1,1 @@
+/home/arseniy/Blockchain/blockchain/logicIntoModules/target/debug/logicIntoModules: /home/arseniy/Blockchain/blockchain/logicIntoModules/src/block.rs /home/arseniy/Blockchain/blockchain/logicIntoModules/src/blockchain.rs /home/arseniy/Blockchain/blockchain/logicIntoModules/src/main.rs /home/arseniy/Blockchain/blockchain/logicIntoModules/src/transaction.rs

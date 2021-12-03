@@ -9,15 +9,15 @@ use block::Block;
 use block::transaction::Transaction;
 
 pub struct Blockchain {
-    blockchain: LinkedList<Block>,
+   pub blockchain: LinkedList<Block>,
 }
 
 impl Blockchain {
-    pub fn initialize(blockchain: &mut LinkedList<Block>) {
+    pub fn initialize(blch: &mut Blockchain) {
         let start = SystemTime::now();
         let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
         let timestamp = (since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000).to_string();
-        blockchain.push_back(Block {
+        blch.blockchain.push_back(Block {
             prev_hash: String::new(),
             transaction: Transaction {
                 from: String::new(),
@@ -54,15 +54,15 @@ impl Blockchain {
         });
     }
 
-    pub fn fillBlockchain(blockchain: &mut LinkedList<Block>, queue: &mut VecDeque<Transaction>){
+    pub fn fillBlockchain(blch: &mut Blockchain, queue: &mut VecDeque<Transaction>){
         for _ in 0..queue.len() {
-            blockchain.push_back(Blockchain::newBlock((blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+            blch.blockchain.push_back(Blockchain::newBlock((blch.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
         }   
     }
 
-    pub fn showBlocksData(blockchain: &mut LinkedList<Block>){
+    pub fn showBlocksData(blch: &mut Blockchain){
         println!();
-        for block in blockchain.iter() {
+        for block in blch.blockchain.iter() {
             println!("Header: {}, Transaction (Sender: {}, Receiver: {}, Amount: {}, Hash: {})", block.getPrevHash(), block.transaction.getFrom(), block.transaction.getTo(), block.transaction.getAmount(), block.getHash());
         }    
     }

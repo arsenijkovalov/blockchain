@@ -52,11 +52,11 @@ struct Blockchain {
 }
 
 impl Blockchain {
-    fn initialize(blockchain: &mut LinkedList<Block>) {
+    fn initialize(blch: &mut Blockchain) {
         let start = SystemTime::now();
         let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
         let timestamp = (since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000).to_string();
-        blockchain.push_back(Block {
+        blch.blockchain.push_back(Block {
             prev_hash: String::new(),
             transaction: Transaction {
                 from: String::new(),
@@ -92,9 +92,13 @@ impl Blockchain {
         });
     }
 
-    fn chooseTheLongestChain(seconds: &mut u64, main_chain: &mut LinkedList<Block>, queue: &mut VecDeque<Transaction>) {
-        let mut main_forked_chain = LinkedList::<Block>::new();
-        let mut forked_chain = LinkedList::<Block>::new();
+    fn chooseTheLongestChain(seconds: &mut u64, main_chain: &mut Blockchain, queue: &mut VecDeque<Transaction>) {
+        let mut main_forked_chain = Blockchain {
+            blockchain: LinkedList::<Block>::new(),
+        };
+        let mut forked_chain = Blockchain {
+            blockchain: LinkedList::<Block>::new(),
+        };
         loop {
             if queue.is_empty() {
                 break;
@@ -102,40 +106,40 @@ impl Blockchain {
             thread::sleep(time::Duration::from_secs(1));
             *seconds += 1;
             if *seconds % 3 == 0 {
-                if main_forked_chain.len() == 0 {
-                    main_forked_chain.push_back(Blockchain::newBlock((main_chain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+                if main_forked_chain.blockchain.len() == 0 {
+                    main_forked_chain.blockchain.push_back(Blockchain::newBlock((main_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
                 }
                 else {
-                    main_forked_chain.push_back(Blockchain::newBlock((main_forked_chain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+                    main_forked_chain.blockchain.push_back(Blockchain::newBlock((main_forked_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
                 }
                 println!("Generated block to main chain (delay 3 sec)");
             }
             if *seconds % 5 == 0 {
-                if forked_chain.len() == 0 {
-                    forked_chain.push_back(Blockchain::newBlock((main_chain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                    forked_chain.pop_front();
+                if forked_chain.blockchain.len() == 0 {
+                    forked_chain.blockchain.push_back(Blockchain::newBlock((main_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+                    forked_chain.blockchain.pop_front();
                 }
                 else {
-                    forked_chain.push_back(Blockchain::newBlock((forked_chain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                    forked_chain.pop_front();
+                    forked_chain.blockchain.push_back(Blockchain::newBlock((forked_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+                    forked_chain.blockchain.pop_front();
                 }
                 println!("Generated block to forked chain (delay 5 sec)");
             }
             if *seconds % 7 == 0 {
                 println!("Choosing the longest chain");
-                let main_forked_chain_len = main_forked_chain.len();
-                let forked_chain_len = forked_chain.len();
+                let main_forked_chain_len = main_forked_chain.blockchain.len();
+                let forked_chain_len = forked_chain.blockchain.len();
                 match main_forked_chain_len.cmp(&forked_chain_len) {
                     Ordering::Less => {
                         for _ in 0..forked_chain_len {
-                            main_chain.push_back(forked_chain.front().unwrap().clone());
-                            forked_chain.pop_front();
+                            main_chain.blockchain.push_back(forked_chain.blockchain.front().unwrap().clone());
+                            forked_chain.blockchain.pop_front();
                         }
                     },
                     Ordering::Greater => {
                         for _ in 0..main_forked_chain_len {
-                            main_chain.push_back(main_forked_chain.front().unwrap().clone());
-                            main_forked_chain.pop_front();
+                            main_chain.blockchain.push_back(main_forked_chain.blockchain.front().unwrap().clone());
+                            main_forked_chain.blockchain.pop_front();
                         }
                     },
                     Ordering::Equal => {
@@ -147,15 +151,15 @@ impl Blockchain {
         }
     }
 
-    fn fillBlockchain(blockchain: &mut LinkedList<Block>, queue: &mut VecDeque<Transaction>){
+    fn fillBlockchain(blch: &mut Blockchain, queue: &mut VecDeque<Transaction>){
         for _ in 0..queue.len() {
-            blockchain.push_back(Blockchain::newBlock((blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
+            blch.blockchain.push_back(Blockchain::newBlock((blch.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
         }   
     }
 
-    fn showBlocksData(blockchain: &mut LinkedList<Block>){
+    fn showBlocksData(blch: &mut Blockchain){
         println!();
-        for block in blockchain.iter() {
+        for block in blch.blockchain.iter() {
             println!("Header: {}, Transaction (Sender: {}, Receiver: {}, Amount: {}, Hash: {})", block.getPrevHash(), block.transaction.getFrom(), block.transaction.getTo(), block.transaction.getAmount(), block.getHash());
         }    
     }
@@ -173,9 +177,11 @@ mod tests {
     #[test]
     fn chainIntegrity() {
         let mut queue: VecDeque<Transaction> = VecDeque::new();
-        let mut blockchain = LinkedList::<Block>::new();
+        let mut blch = Blockchain {
+            blockchain: LinkedList::<Block>::new(),
+        };
     
-        Blockchain::initialize(&mut blockchain);
+        Blockchain::initialize(&mut blch);
     
         Blockchain::newTransaction(String::from("Sender 1"), String::from("Receiver 5"), 100, &mut queue);
         Blockchain::newTransaction(String::from("Sender 2"), String::from("Receiver 2"), 1000, &mut queue);
@@ -183,13 +189,13 @@ mod tests {
         Blockchain::newTransaction(String::from("Sender 4"), String::from("Receiver 3"), 100000, &mut queue);
         Blockchain::newTransaction(String::from("Sender 5"), String::from("Receiver 4"), 1000000, &mut queue);
     
-        Blockchain::fillBlockchain(&mut blockchain, &mut queue);
+        Blockchain::fillBlockchain(&mut blch, &mut queue);
 
-        assert_eq!({blockchain.front().unwrap().getHash().chars().all(char::is_numeric)}, true);
+        assert_eq!({blch.blockchain.front().unwrap().getHash().chars().all(char::is_numeric)}, true);
         
-        let mut prev_hash = blockchain.front().unwrap().getHash();
+        let mut prev_hash = blch.blockchain.front().unwrap().getHash();
         let mut first_iteration = true;
-        for block in blockchain.iter() {
+        for block in blch.blockchain.iter() {
             if(first_iteration) {
                 first_iteration = false;
                 continue;
@@ -202,7 +208,10 @@ mod tests {
 
 fn main() {
     let mut queue: VecDeque<Transaction> = VecDeque::new();
-    let mut main_chain = LinkedList::<Block>::new();
+    let mut main_chain = Blockchain {
+        blockchain: LinkedList::<Block>::new(),
+    };
+
     let mut seconds: u64 = 0;
 
     Blockchain::initialize(&mut main_chain);
