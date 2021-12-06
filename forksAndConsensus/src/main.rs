@@ -1,9 +1,10 @@
 use sha2::{Sha256, Digest};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::VecDeque;
 use std::collections::LinkedList;
+use num_bigint::{BigInt, BigUint, RandomBits};
+use rand::Rng;
+use chrono::Utc;
 use std::{thread, time};
-use std::cmp::Ordering;
 
 #[derive(Clone)]
 struct Transaction {
@@ -27,13 +28,24 @@ impl Transaction {
 }
 
 #[derive(Clone)]
+struct Header {
+    timestamp: i64,
+    nonce: BigInt,
+}
+
+#[derive(Clone)]
 struct Block {
+    header: Header,
     prev_hash: String,
     transaction: Transaction,
     hash: String,
 }
 
 impl Block {
+    fn getHeader(&self) -> &Header {
+        &self.header
+    }
+
     fn getPrevHash(&self) -> &String {
         &self.prev_hash
     }
@@ -47,121 +59,129 @@ impl Block {
     }
 }
 
+#[derive(Clone)]
 struct Blockchain {
     blockchain: LinkedList<Block>,
 }
 
 impl Blockchain {
     fn initialize(blch: &mut Blockchain) {
-        let start = SystemTime::now();
-        let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-        let timestamp = (since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000).to_string();
         blch.blockchain.push_back(Block {
+            header: Header {
+                timestamp: Utc::now().timestamp(),
+                nonce: rand::thread_rng().sample(RandomBits::new(256)),
+            },
             prev_hash: String::new(),
             transaction: Transaction {
                 from: String::new(),
                 to: String::new(),
                 amount: 0,
             },
-            hash: timestamp,
+            hash: Utc::now().timestamp().to_string(),
         });
     }
 
-    fn newBlock(prev_hash: String, transaction_v: Transaction, queue: &mut VecDeque<Transaction>) -> Block {
-        let mut data = String::from(transaction_v.getFrom());
-        data.push_str(&transaction_v.getTo());
-        data.push_str(&transaction_v.getAmount().to_string());
-        let block = Block {
-            prev_hash,
-            transaction: queue.front().unwrap().clone(),
-            hash: {
-                let mut hasher = Sha256::new();
-                hasher.update(data);
-                format!("{:X}", hasher.finalize())
-            },
-        };
-        queue.pop_front();
+    fn generateTransaction() -> Transaction {
+        let randomSenderNumber: BigUint = rand::thread_rng().sample(RandomBits::new(128));
+        let randomReceiverNumber: BigUint = rand::thread_rng().sample(RandomBits::new(128));
+        Transaction {
+            from: format!("{}{}", String::from("Sender "), randomSenderNumber),
+            to: format!("{}{}", String::from("Receiver "), randomReceiverNumber),
+            amount: rand::thread_rng().gen(),
+        }
+    }
+    
+    fn mint(prev_hash: String) -> Block {
+        let mut block: Block;
+        let random_transaction = Blockchain::generateTransaction();
+        loop {
+            let random_nonce: BigInt = rand::thread_rng().sample(RandomBits::new(256));
+            let mut data = String::from(random_transaction.getFrom());
+            data.push_str(&random_transaction.getTo());
+            data.push_str(&random_transaction.getAmount().to_string());
+            data.push_str(&random_nonce.to_string());
+            let mut hasher = Sha256::new();
+            hasher.update(data);
+            data = format!("{:X}", hasher.finalize());
+            if data.chars().filter(|&c| c == '1').count() >= 6 {   
+                block = Block {
+                    header: Header {
+                        timestamp: Utc::now().timestamp(),
+                        nonce: random_nonce,
+                    },
+                    prev_hash,
+                    transaction: Blockchain::generateTransaction(),
+                    hash: data,
+                };
+                break;
+            }
+        }
         block
     }
-
+    
     fn newTransaction(from: String, to: String, amount: u64, queue: &mut VecDeque<Transaction>) {
-        queue.push_back(Transaction {
+        let transaction = Transaction {
             from,
             to,
             amount,
-        });
-    }
-
-    fn chooseTheLongestChain(seconds: &mut u64, main_chain: &mut Blockchain, queue: &mut VecDeque<Transaction>) {
-        let mut main_forked_chain = Blockchain {
-            blockchain: LinkedList::<Block>::new(),
         };
-        let mut forked_chain = Blockchain {
-            blockchain: LinkedList::<Block>::new(),
-        };
-        loop {
-            if queue.is_empty() {
-                break;
-            } 
-            thread::sleep(time::Duration::from_secs(1));
-            *seconds += 1;
-            if *seconds % 3 == 0 {
-                if main_forked_chain.blockchain.len() == 0 {
-                    main_forked_chain.blockchain.push_back(Blockchain::newBlock((main_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                }
-                else {
-                    main_forked_chain.blockchain.push_back(Blockchain::newBlock((main_forked_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                }
-                println!("Generated block to main chain (delay 3 sec)");
-            }
-            if *seconds % 5 == 0 {
-                if forked_chain.blockchain.len() == 0 {
-                    forked_chain.blockchain.push_back(Blockchain::newBlock((main_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                    forked_chain.blockchain.pop_front();
-                }
-                else {
-                    forked_chain.blockchain.push_back(Blockchain::newBlock((forked_chain.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-                    forked_chain.blockchain.pop_front();
-                }
-                println!("Generated block to forked chain (delay 5 sec)");
-            }
-            if *seconds % 7 == 0 {
-                println!("Choosing the longest chain");
-                let main_forked_chain_len = main_forked_chain.blockchain.len();
-                let forked_chain_len = forked_chain.blockchain.len();
-                match main_forked_chain_len.cmp(&forked_chain_len) {
-                    Ordering::Less => {
-                        for _ in 0..forked_chain_len {
-                            main_chain.blockchain.push_back(forked_chain.blockchain.front().unwrap().clone());
-                            forked_chain.blockchain.pop_front();
-                        }
-                    },
-                    Ordering::Greater => {
-                        for _ in 0..main_forked_chain_len {
-                            main_chain.blockchain.push_back(main_forked_chain.blockchain.front().unwrap().clone());
-                            main_forked_chain.blockchain.pop_front();
-                        }
-                    },
-                    Ordering::Equal => {
-                        println!("Waiting for the transaction ...");
-                        break;
-                    },
-                }
-            }
-        }
-    }
-
-    fn fillBlockchain(blch: &mut Blockchain, queue: &mut VecDeque<Transaction>){
-        for _ in 0..queue.len() {
-            blch.blockchain.push_back(Blockchain::newBlock((blch.blockchain.back().unwrap().getHash()).to_string(), queue.front().unwrap().clone(), queue));
-        }   
+        queue.push_back(transaction);
     }
 
     fn showBlocksData(blch: &mut Blockchain){
         println!();
         for block in blch.blockchain.iter() {
             println!("Header: {}, Transaction (Sender: {}, Receiver: {}, Amount: {}, Hash: {})", block.getPrevHash(), block.transaction.getFrom(), block.transaction.getTo(), block.transaction.getAmount(), block.getHash());
-        }    
+        } 
+    }
+    
+    fn createForkedChain(blch: &mut Blockchain) -> LinkedList<Block> {
+        if blch.blockchain.len() == 2 {
+            blch.blockchain.push_back(Blockchain::mint(blch.blockchain.back().unwrap().getHash().to_string()));
+        }
+        let last_block = blch.blockchain.back().unwrap().clone();
+        blch.blockchain.pop_back();
+        let mut left_branch = LinkedList::<Block>::new();
+        let mut right_branch = LinkedList::<Block>::new();
+        right_branch.push_back(Blockchain::mint(last_block.getHash().to_string()));
+        left_branch.push_back(last_block);
+        thread::sleep(time::Duration::from_secs(1));
+        let random_branch = rand::thread_rng().gen_range(0, 2);
+        if random_branch == 0 {
+            left_branch.push_back(Blockchain::mint(left_branch.back().unwrap().getHash().to_string()))
+        }
+        else {
+            right_branch.push_back(Blockchain::mint(right_branch.back().unwrap().getHash().to_string()))
+        }
+        thread::sleep(time::Duration::from_secs(1));
+        if left_branch.len() < right_branch.len() {
+            right_branch.clone()
+        }
+        else {
+            left_branch.clone()
+        }
+    }
+
+    fn generateBlockchain(blch: &mut Blockchain, total_time: u32) {
+        Blockchain::initialize(blch);
+        let mut sec = 0;
+        thread::sleep(time::Duration::from_secs(3));
+        loop {
+            if sec == total_time {
+                thread::sleep(time::Duration::from_secs(2));
+                break;
+            }
+            if sec % 3 == 0 {
+                blch.blockchain.push_back(Blockchain::mint(blch.blockchain.back().unwrap().getHash().to_string()));
+            }
+            if sec % 5 == 0 {
+                let mut forked_chain = Blockchain::createForkedChain(blch);
+                blch.blockchain.append(&mut forked_chain);
+                sec += 2;
+                continue;
+            }
+            sec += 1;
+        }
     }
 }
 
@@ -176,20 +196,14 @@ mod tests {
 
     #[test]
     fn chainIntegrity() {
-        let mut queue: VecDeque<Transaction> = VecDeque::new();
+        let mut transaction_queue: VecDeque<Transaction> = VecDeque::new();
         let mut blch = Blockchain {
             blockchain: LinkedList::<Block>::new(),
         };
     
-        Blockchain::initialize(&mut blch);
-    
-        Blockchain::newTransaction(String::from("Sender 1"), String::from("Receiver 5"), 100, &mut queue);
-        Blockchain::newTransaction(String::from("Sender 2"), String::from("Receiver 2"), 1000, &mut queue);
-        Blockchain::newTransaction(String::from("Sender 3"), String::from("Receiver 1"), 10000, &mut queue);
-        Blockchain::newTransaction(String::from("Sender 4"), String::from("Receiver 3"), 100000, &mut queue);
-        Blockchain::newTransaction(String::from("Sender 5"), String::from("Receiver 4"), 1000000, &mut queue);
-    
-        Blockchain::fillBlockchain(&mut blch, &mut queue);
+        Blockchain::generateBlockchain(&mut blch, 10);
+
+        Blockchain::showBlocksData(&mut blch);
 
         assert_eq!({blch.blockchain.front().unwrap().getHash().chars().all(char::is_numeric)}, true);
         
@@ -207,26 +221,12 @@ mod tests {
 }
 
 fn main() {
-    let mut queue: VecDeque<Transaction> = VecDeque::new();
-    let mut main_chain = Blockchain {
+    let mut transaction_queue: VecDeque<Transaction> = VecDeque::new();
+    let mut blch = Blockchain {
         blockchain: LinkedList::<Block>::new(),
     };
 
-    let mut seconds: u64 = 0;
+    Blockchain::generateBlockchain(&mut blch, 10);
 
-    Blockchain::initialize(&mut main_chain);
-
-    Blockchain::newTransaction(String::from("Sender 1"), String::from("Receiver 5"), 100, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 2"), String::from("Receiver 2"), 1000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 3"), String::from("Receiver 1"), 10000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 4"), String::from("Receiver 4"), 100000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 5"), String::from("Receiver 6"), 1000000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 6"), String::from("Receiver 3"), 10000000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 7"), String::from("Receiver 8"), 100000000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 8"), String::from("Receiver 7"), 1000000000, &mut queue);
-    Blockchain::newTransaction(String::from("Sender 9"), String::from("Receiver 9"), 10000000000, &mut queue);
-    
-    Blockchain::chooseTheLongestChain(&mut seconds, &mut main_chain, &mut queue);
-    
-    Blockchain::showBlocksData(&mut main_chain);
+    Blockchain::showBlocksData(&mut blch);
 }

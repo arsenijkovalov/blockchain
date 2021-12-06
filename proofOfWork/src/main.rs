@@ -1,9 +1,9 @@
 use sha2::{Sha256, Digest};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::VecDeque;
 use std::collections::LinkedList;
 use num_bigint::{BigInt, BigUint, RandomBits};
 use rand::Rng;
+use chrono::Utc;
 
 #[derive(Clone)]
 struct Transaction {
@@ -28,7 +28,7 @@ impl Transaction {
 
 #[derive(Clone)]
 struct Header {
-    timestamp: u64,
+    timestamp: i64,
     nonce: BigInt,
 }
 
@@ -63,16 +63,9 @@ struct Blockchain {
 
 impl Blockchain {
     fn initialize(blch: &mut Blockchain) {
-        let start = SystemTime::now();
-        let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-        let timestamp = (since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000).to_string();
         blch.blockchain.push_back(Block {
             header: Header {
-                timestamp: {
-                    let start = SystemTime::now();
-                    let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-                    since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000
-                },
+                timestamp: Utc::now().timestamp(),
                 nonce: rand::thread_rng().sample(RandomBits::new(256)),
             },
             prev_hash: String::new(),
@@ -81,24 +74,12 @@ impl Blockchain {
                 to: String::new(),
                 amount: 0,
             },
-            hash: timestamp,
+            hash: Utc::now().timestamp().to_string(),
         });
     }
     
     fn mint(queue: &mut VecDeque<Transaction>, prev_hash_v: String) -> Block {
-        let mut block = Block {
-            header: Header {
-                timestamp: 0,
-                nonce: BigInt::from(0),
-            },
-            prev_hash: String::new(),
-            transaction: Transaction {
-                from: String::new(),
-                to: String::new(),
-                amount: 0,
-            },
-            hash: String::new(),
-        };
+        let mut block: Block;
         loop {
             let random_nonce: BigInt = rand::thread_rng().sample(RandomBits::new(256));
             let mut data = String::from(queue[0].getFrom());
@@ -111,11 +92,7 @@ impl Blockchain {
             if data.chars().filter(|&c| c == '1').count() >= 6 {        
                 block = Block {
                     header: Header {
-                        timestamp: {
-                            let start = SystemTime::now();
-                            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-                            since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000
-                        },
+                        timestamp: Utc::now().timestamp(),
                         nonce: random_nonce,
                     },
                     prev_hash: String::from(prev_hash_v),
