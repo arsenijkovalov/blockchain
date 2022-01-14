@@ -1,2 +1,0 @@
-cargo:rustc-env=TYPENUM_BUILD_CONSTS=/home/arseniy/Blockchain/blockchain/dataBackupAndRecovery/target/debug/build/typenum-74f4fd522879e552/out/consts.rs
-cargo:rustc-env=TYPENUM_BUILD_OP=/home/arseniy/Blockchain/blockchain/dataBackupAndRecovery/target/debug/build/typenum-74f4fd522879e552/out/op.rs
