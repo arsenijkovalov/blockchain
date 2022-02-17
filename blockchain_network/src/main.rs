@@ -1,265 +1,381 @@
-use actix::clock::interval_at;
-use actix::clock::Instant;
-use actix::dev::channel::AddressSender;
-use actix::prelude::*;
-use actix_files as fs;
 use actix_rt::spawn;
-use actix_rt::time::interval;
-use actix_web::dev::Server;
 use actix_web::{
-    get, middleware, post,
-    web::{self, Data, Json},
-    App, Error, HttpRequest, HttpResponse, HttpServer, Responder, Result,
+    dev::Server,
+    get, post,
+    web::{self, Data},
+    App, HttpResponse, HttpServer, Responder,
 };
-use actix_web_actors::ws;
 use awc::Client;
 use chrono::Utc;
 use futures::future::join_all;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
+use rand::{distributions::Alphanumeric, Rng};
 use sha2::{Digest, Sha256};
-use std::collections::{LinkedList, VecDeque};
-use std::fs::File;
-use std::io::Read;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{collections::VecDeque, fs::File, io::Read, sync::Mutex};
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+mod blockchain;
+use blockchain::*;
 
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+mod config;
+use config::*;
 
-async fn ws_index(r: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    println!("{:?}", r);
-    let res = ws::start(MyWebSocket::new(), &r, stream);
-    println!("{:?}", res);
-    res
+mod traits;
+use traits::*;
+
+#[get("/get_transaction_deque")]
+async fn get_transaction_deque(
+    transaction_deque: Data<Mutex<VecDeque<Transaction>>>,
+) -> impl Responder {
+    web::Json(transaction_deque.lock().unwrap().clone())
 }
 
-struct MyWebSocket {
-    hb: Instant,
+#[post("/remove_transaction")]
+async fn remove_transaction(
+    transaction_to_delete: web::Json<Transaction>,
+    transaction_deque: Data<Mutex<VecDeque<Transaction>>>,
+) -> impl Responder {
+    let mut transaction_deque = transaction_deque.lock().unwrap();
+    match transaction_deque
+        .iter()
+        .position(|transaction| *transaction == transaction_to_delete.0)
+    {
+        Some(_) => (),
+        None => (),
+    }
+    HttpResponse::Ok()
 }
 
-impl Actor for MyWebSocket {
-    type Context = ws::WebsocketContext<Self>;
-    fn started(&mut self, ctx: &mut Self::Context) {
-        self.hb(ctx);
+#[post("/receive_transaction")]
+async fn receive_transaction(
+    data: web::Json<(String, Vec<u8>)>,
+    transaction_deque: Data<Mutex<VecDeque<Transaction>>>,
+    config_list: Data<Vec<Config>>,
+) -> impl Responder {
+    let sender_config = config_list
+        .get_ref()
+        .iter()
+        .find(|config| config.address == data.0 .0)
+        .unwrap();
+    let received_transaction = serde_json::from_str(&sender_config.decrypt(data.0 .1)).unwrap();
+    transaction_deque
+        .lock()
+        .unwrap()
+        .push_back(received_transaction);
+    HttpResponse::Ok()
+}
+
+async fn generate_transaction() -> Transaction {
+    println!("Transaction generated");
+    Transaction {
+        from: fastrand::u64(u64::MIN..u64::MAX).to_string(),
+        to: fastrand::u64(u64::MIN..u64::MAX).to_string(),
+        amount: fastrand::u64(u64::MIN..u64::MAX),
     }
 }
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        println!("WS: {:?}", msg);
-        match msg {
-            Ok(ws::Message::Ping(msg)) => {
-                self.hb = Instant::now();
-                ctx.pong(&msg);
-            }
-            Ok(ws::Message::Pong(_)) => {
-                self.hb = Instant::now();
-            }
-            Ok(ws::Message::Text(text)) => ctx.text(text),
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
-            Ok(ws::Message::Close(reason)) => {
-                ctx.close(reason);
-                ctx.stop();
-            }
-            _ => ctx.stop(),
-        }
-    }
-}
-
-impl MyWebSocket {
-    fn new() -> Self {
-        Self { hb: Instant::now() }
-    }
-
-    fn hb(&self, ctx: &mut <Self as Actor>::Context) {
-        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
-            if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
-                println!("Websocket Client heartbeat failed, disconnecting!");
-                ctx.stop();
-                return;
-            }
-            ctx.ping(b"");
-        });
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Transaction {
-    from: String,
-    to: String,
-    amount: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Header {
-    timestamp: i64,
-    nonce: u128,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Block {
-    header: Header,
-    prev_hash: String,
-    transaction: Transaction,
-    hash: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Blockchain {
-    transactions: VecDeque<Transaction>,
-    blockchain: LinkedList<Block>,
-}
-
-impl Blockchain {
-    fn mint(&mut self) {
+#[get("/share_transaction")]
+async fn share_transaction(
+    address_list: Data<Vec<String>>,
+    config: Data<Config>,
+) -> impl Responder {
+    spawn(async move {
         loop {
-            let random_nonce = fastrand::u128(u128::MIN..u128::MAX);
-            let mut transaction_data = String::new();
-            transaction_data.push_str(&self.transactions.front().unwrap().from.clone());
-            transaction_data.push_str(&self.transactions.front().unwrap().to.clone());
-            transaction_data.push_str(
-                &self
-                    .transactions
-                    .front()
+            (1..30).set_delay().tick().await;
+            let encrypted_transaction = config.encrypt(
+                serde_json::to_string(&generate_transaction().await)
                     .unwrap()
-                    .amount
-                    .clone()
-                    .to_string(),
+                    .as_bytes(),
             );
-            transaction_data.push_str(&random_nonce.to_string());
-            let mut hasher = Sha256::new();
-            hasher.update(transaction_data);
-            transaction_data = format!("{:X}", hasher.finalize());
-            if transaction_data.chars().filter(|&c| c == '1').count() >= 6 {
-                self.blockchain.push_back(Block {
+            for addr in address_list.get_ref() {
+                Client::default()
+                    .post("http://".to_string() + addr + "/receive_transaction")
+                    .send_json(&serde_json::json!((
+                        &config.address,
+                        &encrypted_transaction,
+                    )))
+                    .await
+                    .expect("FAILED: receive_transaction");
+            }
+        }
+    });
+    HttpResponse::Ok()
+}
+
+#[get("/get_chains")]
+async fn get_chains(chains: Data<Mutex<Vec<Blockchain>>>) -> impl Responder {
+    web::Json(chains.lock().unwrap().clone())
+}
+
+#[post("/generate_block")]
+async fn generate_block(
+    prev_hash: web::Json<String>,
+    transaction_deque: Data<Mutex<VecDeque<Transaction>>>,
+) -> impl Responder {
+    let first_transaction_in_deque = transaction_deque.lock().unwrap().front().unwrap().clone();
+    loop {
+        let random_nonce = fastrand::u64(u64::MIN..u64::MAX);
+        let mut transaction_data = String::new()
+            + &first_transaction_in_deque.from
+            + &first_transaction_in_deque.to
+            + &first_transaction_in_deque.amount.to_string()
+            + &random_nonce.to_string()
+            + &prev_hash.0;
+        let mut hasher = Sha256::new();
+        hasher.update(transaction_data);
+        transaction_data = format!("{:X}", hasher.finalize());
+        match transaction_data.chars().filter(|&c| c == '1').count() >= 6 {
+            true => {
+                return web::Json(Block {
                     header: Header {
                         timestamp: Utc::now().timestamp(),
                         nonce: random_nonce,
                     },
-                    prev_hash: String::from(self.blockchain.back().unwrap().hash.clone()),
-                    transaction: self.transactions.front().unwrap().clone(),
+                    prev_hash: prev_hash.0,
+                    transaction: first_transaction_in_deque,
                     hash: transaction_data,
-                });
-                break;
+                })
             }
+            false => (),
         }
     }
 }
 
-impl Blockchain {
-    fn new() -> Self {
-        let mut blchn = Blockchain {
-            transactions: VecDeque::<Transaction>::new(),
-            blockchain: LinkedList::<Block>::new(),
-        };
-        blchn.blockchain.push_back(Block {
-            header: Header {
-                timestamp: Utc::now().timestamp(),
-                nonce: 0,
-            },
-            prev_hash: String::new(),
-            transaction: Transaction {
-                from: String::new(),
-                to: String::new(),
-                amount: 0,
-            },
-            hash: Utc::now().timestamp().to_string(),
-        });
-        blchn
+#[post("/share_block")]
+async fn share_block(
+    address: web::Json<String>,
+    address_list: Data<Vec<String>>,
+) -> impl Responder {
+    spawn(async move {
+        let address = address.0;
+        loop {
+            let transaction_deque: VecDeque<Transaction> = serde_json::from_slice(
+                &Client::default()
+                    .get("http://".to_string() + &address + "/get_transaction_deque")
+                    .send()
+                    .await
+                    .unwrap()
+                    .body()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            match !transaction_deque.is_empty() {
+                true => {
+                    let chains: Vec<Blockchain> = serde_json::from_slice(
+                        &Client::default()
+                            .get("http://".to_string() + &address + "/get_chains")
+                            .send()
+                            .await
+                            .unwrap()
+                            .body()
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    let block: Block = serde_json::from_slice(
+                        &Client::default()
+                            .post("http://".to_string() + &address + "/generate_block")
+                            .send_json(&serde_json::json!(chains
+                                [rand::thread_rng().gen_range(0, chains.len())]
+                            .blockchain
+                            .back()
+                            .unwrap()
+                            .hash
+                            .clone()))
+                            .await
+                            .unwrap()
+                            .body()
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    (5..45).set_delay().tick().await;
+                    println!("{} share_block", address);
+                    let client = Client::default();
+                    for addr in address_list.get_ref().iter() {
+                        client
+                            .post("http://".to_string() + addr + "/receive_block")
+                            .send_json(&serde_json::json!(block.clone()))
+                            .await
+                            .expect("FAILED: receive_block");
+                        client
+                            .post("http://".to_string() + addr + "/remove_transaction")
+                            .send_json(&serde_json::json!(transaction_deque
+                                .front()
+                                .unwrap()
+                                .clone()))
+                            .await
+                            .expect("FAILED: remove_transaction");
+                    }
+                }
+                false => (),
+            }
+        }
+    });
+    HttpResponse::Ok()
+}
+
+#[post("/receive_block")]
+async fn receive_block(
+    received_block: web::Json<Block>,
+    chains: Data<Mutex<Vec<Blockchain>>>,
+) -> impl Responder {
+    let received_block = received_block.0;
+    let mut chains = chains.lock().unwrap();
+    let mut chain_index = 0;
+    let mut block_index = 0;
+    'outer: for chain in chains.iter() {
+        for block in chain.blockchain.iter() {
+            if block.hash == received_block.prev_hash {
+                break 'outer;
+            }
+            block_index += 1;
+        }
+        block_index = 0;
+        chain_index += 1;
     }
+    match block_index == chains[chain_index].blockchain.len() - 1 {
+        true => chains[chain_index].blockchain.push_back(received_block),
+        false => {
+            let mut forked_chain = Blockchain::default();
+            for (i, _) in [0..block_index + 1].iter().enumerate() {
+                forked_chain.blockchain.push_back(
+                    chains[chain_index]
+                        .blockchain
+                        .iter()
+                        .nth(i)
+                        .unwrap()
+                        .clone(),
+                );
+            }
+            forked_chain.blockchain.push_back(received_block);
+            chains.push(forked_chain);
+        }
+    }
+    HttpResponse::Ok()
 }
 
-async fn get_blockchain_data(blockchain_data: Data<Mutex<Blockchain>>) -> impl Responder {
-    // get
-    let mut blchn = blockchain_data.lock().unwrap();
-    format!("{:#?}", blchn)
+#[post("/validate_blocks")]
+async fn validate_blocks(address: web::Json<String>) -> impl Responder {
+    spawn(async move {
+        loop {
+            50.set_delay().tick().await;
+            let mut chains: Vec<Blockchain> = serde_json::from_slice(
+                &Client::default()
+                    .get("http://".to_string() + &address.0 + "/get_chains")
+                    .send()
+                    .await
+                    .unwrap()
+                    .body()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            if chains.len() > 1 {
+                chains
+                    .sort_by(|current, next| next.blockchain.len().cmp(&current.blockchain.len()));
+                println!("Validation attempt");
+                if chains[0].blockchain.len() > chains[1].blockchain.len() {
+                    let longest_chain = chains[0].clone();
+                    chains.clear();
+                    chains.push(longest_chain);
+                    println!("Successful validation \n {:#?}", chains);
+                }
+            }
+        }
+    });
+    HttpResponse::Ok()
 }
 
-fn run_server(addr: String, blockchain_data: Data<Mutex<Blockchain>>) -> Server {
+fn run_server(
+    transaction_deque: Data<Mutex<VecDeque<Transaction>>>,
+    chains: Data<Mutex<Vec<Blockchain>>>,
+    config: Config,
+    config_list: Vec<Config>,
+) -> Server {
+    let addr = config.address.clone();
     HttpServer::new(move || {
         App::new()
-            .app_data(Data::clone(&blockchain_data))
-            .app_data(Data::clone(&Data::new(get_addressess())))
-            .service(
-                web::resource("/ws/get_blockchain_data").route(web::get().to(get_blockchain_data)),
-            )
-            .service(
-                web::resource("/ws/receive_transaction").route(web::post().to(receive_transaction)),
-            )
-            .service(
-                web::resource("/ws/generate_and_share_transaction")
-                    .route(web::get().to(generate_and_share_transaction)),
-            )
+            .app_data(Data::clone(&transaction_deque))
+            .app_data(Data::clone(&chains))
+            .app_data(Data::clone(&Data::new(get_address_list())))
+            .app_data(Data::clone(&Data::new(config.clone())))
+            .app_data(Data::clone(&Data::new(config_list.clone())))
+            .service(receive_transaction)
+            .service(receive_block)
+            .service(share_transaction)
+            .service(share_block)
+            .service(get_chains)
+            .service(get_transaction_deque)
+            .service(generate_block)
+            .service(validate_blocks)
+            .service(remove_transaction)
     })
     .bind(addr)
     .unwrap()
     .run()
 }
 
-fn get_addressess() -> Vec<String> {
-    let mut config_data = String::new();
+fn get_address_list() -> Vec<String> {
+    let mut buffer = String::new();
     File::open("config.json")
         .unwrap()
-        .read_to_string(&mut config_data)
+        .read_to_string(&mut buffer)
         .unwrap();
-    serde_json::from_str(&config_data).unwrap()
+    let mut address_list: Vec<String> = serde_json::from_str(&buffer).unwrap();
+    address_list.sort_unstable();
+    address_list.dedup();
+    address_list
 }
 
-async fn receive_transaction(
-    transaction_data: web::Json<Transaction>,
-    blockchain_data: Data<Mutex<Blockchain>>,
-) -> impl Responder {
-    // get
-    blockchain_data
-        .lock()
-        .unwrap()
-        .transactions
-        .push_back(transaction_data.0);
-    format!("Ok")
-}
-
-async fn generate_and_share_transaction(addresses: Data<Vec<String>>) -> impl Responder {
-    // get
-    spawn(async move {
-        let mut delay = fastrand::u64(1..10);
-        let mut interval = interval_at(
-            Instant::now() + Duration::from_secs(delay),
-            Duration::from_secs(delay),
-        );
-        loop {
-            interval.tick().await;
-            let transaction = Transaction {
-                from: fastrand::u128(u128::MIN..u128::MAX).to_string(),
-                to: fastrand::u128(u128::MIN..u128::MAX).to_string(),
-                amount: fastrand::u64(u64::MIN..u64::MAX),
-            };
-            for addr in (*addresses.get_ref()).clone() {
-                Client::default()
-                    .post("http://".to_string() + &addr.to_string() + "/ws/receive_transaction")
-                    .send_json(&serde_json::json!(transaction.clone()))
-                    .await;
-            }
-            delay = fastrand::u64(1..10);
-        }
-    });
-    format!("Ok")
+fn get_config_list() -> Vec<Config> {
+    let mut config_list = Vec::<Config>::new();
+    for addr in get_address_list() {
+        config_list.push(Config::new(
+            addr.clone(),
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(100)
+                .map(char::from)
+                .collect(),
+        ));
+    }
+    config_list
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let mut instance_of_blockchain = Blockchain::new();
+    let transaction_deque = VecDeque::<Transaction>::new();
+    let mut chains = Vec::<Blockchain>::new();
+    chains.push(Blockchain::new());
+    let config_list = get_config_list();
     let mut servers = Vec::<Server>::new();
-    for addr in get_addressess() {
+    let client = Client::default();
+    for config in config_list.iter() {
+        match std::net::TcpListener::bind(&config.address) {
+            Ok(_) => (),
+            Err(_) => panic!("{} is already used", &config.address),
+        };
         servers.push(run_server(
-            addr.clone(),
-            Data::new(Mutex::new(instance_of_blockchain.clone())),
+            Data::new(Mutex::new(transaction_deque.clone())),
+            Data::new(Mutex::new(chains.clone())),
+            config.clone(),
+            config_list.clone(),
         ));
-        Client::default()
-            .get("http://".to_string() + &addr.to_string() + "/ws/generate_and_share_transaction")
+        client
+            .get("http://".to_string() + &config.address + "/share_transaction")
             .send()
-            .await;
+            .await
+            .expect("FAILED: share_transaction");
+        client
+            .post("http://".to_string() + &config.address + "/share_block")
+            .send_json(&serde_json::json!(&config.address))
+            .await
+            .expect("FAILED: share_block");
+        client
+            .post("http://".to_string() + &config.address + "/validate_blocks")
+            .send_json(&serde_json::json!(&config.address))
+            .await
+            .expect("FAILED: validate_blocks");
     }
     join_all(servers).await;
     Ok(())
